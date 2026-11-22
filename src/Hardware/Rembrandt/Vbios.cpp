@@ -118,8 +118,10 @@ uint32_t readMemoryWidth(const uint8_t *image, uint32_t size, uint32_t master, u
         readUint16(image + table) > size - table || image[table + 2] != 2 || image[table + 3] != 2) return 0;
     uint32_t type = image[table + 26];
     uint32_t channels = image[table + 27];
-    if (type != 34 || !channels || channels > 4) return 0;
-    return channels * 64;
+    if (!channels || channels > 4) return 0;
+    if (type == 34) return channels * 64;  // DDR5
+    if (type == 35) return channels * 32;  // LPDDR5
+    return 0;
 }
 
 bool isValidTable(const uint8_t *image, uint32_t size, uint32_t offset) {
