@@ -26,7 +26,7 @@ IOReturn wrapGetResources(IOPCIDevice *device) {
 
 uint32_t adjustPciRevision(void *device, uint64_t offset, uint32_t value) {
     uint32_t revision = value & 0xff;
-    if (offset != kIOPCIConfigRevisionID || (revision != 0x02 && revision != 0x0b && revision != 0xc8)) return value;
+    if (offset != kIOPCIConfigRevisionID || (revision != 0x02 && revision != 0x06 && revision != 0x0b && revision != 0xc8)) return value;
     auto read16 = reinterpret_cast<Read16Function>(originalRead16);
     if (read16(device, kIOPCIConfigVendorID) != 0x1002 || read16(device, kIOPCIConfigDeviceID) != 0x1681) return value;
     if (!__atomic_exchange_n(&revisionLogged, true, __ATOMIC_RELAXED))
