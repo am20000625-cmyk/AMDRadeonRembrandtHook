@@ -129,9 +129,14 @@ uint64_t wrapGetDcnFirmwareConstraint(uint64_t version, uint64_t dmcub, uint64_t
     if (!__atomic_load_n(&firmwareHooksReady, __ATOMIC_ACQUIRE))
         return reinterpret_cast<HookFunction>(originalGetDcnFirmwareConstraint)(version, dmcub, list, d, e, f);
     uint64_t result = reinterpret_cast<HookFunction>(originalGetDcnFirmwareConstraint)(version, dmcub, list, d, e, f);
-    if (loadDmubFirmware)
-        reinterpret_cast<HookFunction>(loadDmubFirmware)(dmcub, reinterpret_cast<uint64_t>("atidmcub_0.dat"),
+    if (loadDmubFirmware) {
+        auto loadResult = reinterpret_cast<HookFunction>(loadDmubFirmware)(dmcub, reinterpret_cast<uint64_t>("atidmcub_0.dat"),
             reinterpret_cast<uint64_t>(fw_yc_dmcub), static_cast<uint32_t>(fw_yc_dmcub_end - fw_yc_dmcub), list, 0);
+        static uint32_t reports;
+        if (__atomic_load_n(&reports, __ATOMIC_RELAXED) < 8 && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 8)
+            KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DMUB", "firmware load",
+                "_dmcub_load_fw result=0x%llx", static_cast<unsigned long long>(loadResult));
+    }
     return result;
 }
 

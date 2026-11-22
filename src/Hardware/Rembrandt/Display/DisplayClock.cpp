@@ -1,5 +1,6 @@
 #include "Hardware/Rembrandt/Display/DisplayClock.hpp"
 #include <IOKit/IOLib.h>
+#include "Diagnostics/KernelLog.hpp"
 
 extern uint32_t mmioRead(uint32_t reg);
 extern void mmioWrite(uint32_t reg, uint32_t value);
@@ -62,7 +63,15 @@ void configureHdmiPixelClock(uint64_t ring, uint32_t offset, uint32_t clock) {
     uint64_t data = vramRead64(ring + offset + 8);
     uint32_t word2 = static_cast<uint32_t>(data), word3 = static_cast<uint32_t>(data >> 32);
     if (((word2 >> 16) & 0xff) != 3) return;
-    startOtgClock(word3 & 0xff, clock);
+    uint32_t crtc = word3 & 0xff;
+    startOtgClock(crtc, clock);
+    static uint32_t reports;
+    if (__atomic_load_n(&reports, __ATOMIC_RELAXED) < 24 && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 24) {
+        unsigned locked = crtc <= 3 ? (mmioRead(segmentDword + 0x1b86 + crtc * 0x80) >> 8) & 1u : 0;
+        KernelLog::logDiagnosticInfo(KernelLog::Category::Hardware, "HDMI", "OTG clock",
+            "crtc=%u clock_100hz=%u external_clock_khz=%u external_link=%u encoding=%u depth=%u otg_locked=%u",
+            crtc, clock, stream.pixelClockKhz, stream.link, stream.encoding, stream.depth, locked);
+    }
     if (!stream.pixelClockKhz || getHdmiClock(stream) != clock) return;
     static uint32_t currentMhz = 600;
     uint32_t mhz = static_cast<uint32_t>((static_cast<uint64_t>(stream.pixelClockKhz) * 101 + 99999) / 100000);

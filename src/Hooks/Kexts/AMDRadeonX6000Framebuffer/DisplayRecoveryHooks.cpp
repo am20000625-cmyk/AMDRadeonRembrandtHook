@@ -3,6 +3,7 @@
 #include "Diagnostics/Diagnostics.hpp"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOService.h>
+#include <IOKit/graphics/IOFramebuffer.h>
 #include <kern/thread.h>
 #include <mach/mach_time.h>
 
@@ -39,11 +40,20 @@ void openBootFramebuffer(void *, wait_result_t) {
     IOService *framebuffer = nullptr;
     while (auto service = iterator ? OSDynamicCast(IOService, iterator->getNextObject()) : nullptr) {
         const char *location = service->getLocation();
-        if (location && !strcmp(location, "0")) {
+        if (!framebuffer && location && !strcmp(location, "0")) {
             framebuffer = service;
             framebuffer->retain();
-            break;
         }
+        auto candidate = OSDynamicCast(IOFramebuffer, service);
+        IODisplayModeID mode = 0;
+        IOIndex depth = 0;
+        uintptr_t online = 0;
+        IOReturn onlineResult = candidate ? candidate->getAttributeForConnection(0, kConnectionEnable, &online) : kIOReturnUnsupported;
+        IOReturn modeResult = candidate ? candidate->getCurrentDisplayMode(&mode, &depth) : kIOReturnUnsupported;
+        KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "framebuffer candidate",
+            "location=%s online=%u online_status=0x%x mode=0x%x depth=%u mode_status=0x%x",
+            location ? location : "(none)", static_cast<unsigned>(online != 0), static_cast<unsigned>(onlineResult),
+            static_cast<unsigned>(mode), static_cast<unsigned>(depth), static_cast<unsigned>(modeResult));
     }
     OSSafeReleaseNULL(iterator);
     if (!framebuffer) {
@@ -51,11 +61,16 @@ void openBootFramebuffer(void *, wait_result_t) {
         return;
     }
     auto table = *reinterpret_cast<mach_vm_address_t **>(framebuffer);
+    bool foundOpen = false;
     for (size_t slot = 200; framebufferOpen && slot <= 420; ++slot) {
         if (table[slot] != framebufferOpen) continue;
-        reinterpret_cast<IOReturn (*)(IOService *)>(table[slot])(framebuffer);
+        foundOpen = true;
+        IOReturn result = reinterpret_cast<IOReturn (*)(IOService *)>(table[slot])(framebuffer);
+        KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "open boot framebuffer",
+            "vtable match slot=%lu result=0x%x", static_cast<unsigned long>(slot), static_cast<unsigned>(result));
         break;
     }
+    if (!foundOpen) KernelLog::logDiagnosticWarning(KernelLog::Category::Hook, "DisplayRecovery", "open boot framebuffer", "No open slot match in 200..420");
     framebuffer->release();
 }
 
@@ -108,7 +123,11 @@ void replayPanelConnection(void *argument, wait_result_t) {
         IOSleep(40000);
     }
     uint64_t link = reinterpret_cast<ControllerFunction>(getLink)(controller, 0, 0, 0, 0, 0);
-    if (!link || *reinterpret_cast<uint8_t *>(link + 0x494)) return;
+    if (!link || *reinterpret_cast<uint8_t *>(link + 0x494)) {
+        KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "boot replay",
+            "Skipped: %s", link ? "getLink(0) connection flag is set" : "getLink(0) returned null");
+        return;
+    }
     *reinterpret_cast<uint8_t *>(link + 0x494) = 0;
     memset(reinterpret_cast<void *>(link + 0x4a0), 0, 0x400);
     uint64_t started = getTimeMicroseconds();
@@ -118,6 +137,10 @@ void replayPanelConnection(void *argument, wait_result_t) {
 
 uint64_t wrapEstablishBootDisplay(uint64_t controller, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f) {
     uint64_t result = reinterpret_cast<ControllerFunction>(originalEstablishBootDisplay)(controller, b, c, d, e, f);
+    static uint32_t reports;
+    if (__atomic_load_n(&reports, __ATOMIC_RELAXED) < 8 && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 8)
+        KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "establish boot display",
+            "result=0x%llx", static_cast<unsigned long long>(result));
     if (static_cast<uint32_t>(result) == 0xe00002f0 && detectDisplays && getLink) {
         savedController = controller;
         thread_t thread;

@@ -2,6 +2,7 @@
 #include "Hardware/Rembrandt/Display/DmubInbox.hpp"
 #include "Hardware/Rembrandt/Display/DisplayClock.hpp"
 #include "Hardware/Rembrandt/Display/PanelBacklight.hpp"
+#include "Diagnostics/KernelLog.hpp"
 #include <IOKit/IOLib.h>
 
 extern uint32_t mmioRead(uint32_t reg);
@@ -133,6 +134,15 @@ uint32_t filterDalDmubCommands(uint32_t oldPointer, uint32_t newPointer) {
                 vramWrite32(ring + offset, header & ~0xffffu);
                 if (sendDeferredClockCommand(ring, offset)) ++real;
                 continue;
+            }
+        }
+        if ((header & 0xffff) == 0x0280) {
+            static uint32_t reports;
+            if (__atomic_load_n(&reports, __ATOMIC_RELAXED) < 24 && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 24) {
+                const auto &stream = getExternalDisplayStream();
+                KernelLog::logDiagnosticInfo(KernelLog::Category::Hardware, "HDMI", "DAL command",
+                    "0x0280 clock_100hz=%u external_clock_khz=%u external_link=%u otg_active=%u",
+                    static_cast<uint32_t>(command >> 32), stream.pixelClockKhz, stream.link, static_cast<unsigned>(isOtgActive()));
             }
         }
         if ((header & 0xffff) == 0x0280 && (command >> 32)) configureHdmiPixelClock(ring, offset, command >> 32);
