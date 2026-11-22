@@ -1,0 +1,31 @@
+name: Build Rembrandt kext
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and verify
+        run: |
+          bash prepare.sh
+          bash build-macos.sh
+          kext=build/AMDRadeonRembrandtHook.kext
+          test -d "$kext"
+          plutil -lint "$kext/Contents/Info.plist"
+          lipo -verify_arch x86_64 "$kext/Contents/MacOS/AMDRadeonRembrandtHook"
+          shasum -a 256 "$kext/Contents/MacOS/AMDRadeonRembrandtHook"
+          ditto -c -k --keepParent "$kext" AMDRadeonRembrandtHook-LPDDR5.zip
+
+      - name: Upload kext artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rembrandt-LPDDR5
+          path: AMDRadeonRembrandtHook-LPDDR5.zip
+          if-no-files-found: error
