@@ -19,7 +19,7 @@ jobs:
           kext=build/AMDRadeonRembrandtHook.kext
           test -d "$kext"
           plutil -lint "$kext/Contents/Info.plist"
-          lipo -verify_arch x86_64 "$kext/Contents/MacOS/AMDRadeonRembrandtHook"
+          lipo "$kext/Contents/MacOS/AMDRadeonRembrandtHook" -verify_arch x86_64
           shasum -a 256 "$kext/Contents/MacOS/AMDRadeonRembrandtHook"
           ditto -c -k --keepParent "$kext" AMDRadeonRembrandtHook-LPDDR5.zip
 
