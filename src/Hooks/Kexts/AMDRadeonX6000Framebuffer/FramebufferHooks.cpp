@@ -1,6 +1,8 @@
 #include "Kexts/AMDRadeonX6000Framebuffer/FramebufferHooks.hpp"
 #include "Diagnostics/KernelLog.hpp"
 #include <IOKit/IOLib.h>
+#include <kern/thread_call.h>
+#include <mach/mach_time.h>
 #include <Headers/kern_mach.hpp>
 
 extern uint32_t mmioRead(uint32_t reg);
@@ -14,6 +16,39 @@ mach_vm_address_t originalPopulateXgmiConfig;
 mach_vm_address_t originalMessageAccelerator;
 mach_vm_address_t originalDoesAcceleratorExist;
 mach_vm_address_t originalCreateControllerCoreServices;
+thread_call_t pplibReportCall;
+constexpr uint32_t pplibInitialReports = 5;
+uint32_t pplibCalls;
+uint64_t pplibLastError;
+uint64_t pplibReports[pplibInitialReports + 1];
+
+void reportPplib(thread_call_param_t, thread_call_param_t) {
+    for (auto &slot : pplibReports) {
+        uint64_t sample = __atomic_exchange_n(&slot, 0, __ATOMIC_ACQUIRE);
+        if (!sample) continue;
+        KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "PPLIB", "messageAccelerator",
+            "selector=3 call=%u ready_before_dispatch=%u result=0x%08x",
+            static_cast<unsigned>((sample >> 32) & 0x3fffffff),
+            static_cast<unsigned>((sample >> 62) & 1), static_cast<unsigned>(sample));
+    }
+}
+
+void queuePplibReport(uint32_t call, bool ready, uint32_t result) {
+    if (call > pplibInitialReports) {
+        if (!result) return;
+        uint64_t now;
+        absolutetime_to_nanoseconds(mach_absolute_time(), &now);
+        auto last = __atomic_load_n(&pplibLastError, __ATOMIC_RELAXED);
+        if (last && (now <= last || now - last < 1000000000ULL)) return;
+        if (!__atomic_compare_exchange_n(&pplibLastError, &last, now, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) return;
+    }
+    // The hook may inherit a caller's lock. Format the report on a thread call.
+    size_t slot = call <= pplibInitialReports ? call - 1 : pplibInitialReports;
+    uint64_t sample = (1ULL << 63) | (static_cast<uint64_t>(ready) << 62) |
+        (static_cast<uint64_t>(call & 0x3fffffff) << 32) | result;
+    __atomic_store_n(&pplibReports[slot], sample, __ATOMIC_RELEASE);
+    thread_call_enter(pplibReportCall);
+}
 
 uint64_t wrapCreateControllerCoreServices(uint64_t controller, uint64_t b, uint64_t c, uint64_t d, uint64_t e, uint64_t f) {
     KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "Framebuffer", "create core services", "Enter: controller=%u",
@@ -55,11 +90,16 @@ uint64_t wrapPopulateXgmiConfig(uint64_t object, uint64_t b, uint64_t c, uint64_
 
 uint64_t wrapMessageAccelerator(void *controller, uint64_t type, uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
     auto exists = reinterpret_cast<bool (*)(void *)>(originalDoesAcceleratorExist);
-    if (!exists(controller)) {
-        for (int i = 0; i < 200 && !exists(controller); ++i) IOSleep(100);
+    uint32_t call = pplibReportCall && static_cast<uint32_t>(type) == 3 ?
+        __atomic_add_fetch(&pplibCalls, 1, __ATOMIC_RELAXED) : 0;
+    bool ready = exists(controller);
+    if (!ready) {
+        for (int i = 0; i < 200 && !(ready = exists(controller)); ++i) IOSleep(100);
     }
-    return reinterpret_cast<HookFunction>(originalMessageAccelerator)(
+    auto result = reinterpret_cast<HookFunction>(originalMessageAccelerator)(
         reinterpret_cast<uint64_t>(controller), type, a, b, c, d);
+    if (call) queuePplibReport(call, ready, static_cast<uint32_t>(result));
+    return result;
 }
 
 }
@@ -122,6 +162,9 @@ void installFramebufferIdentityHooks(KernelPatcher &patcher, size_t index, mach_
         wrapMessageAccelerator, originalMessageAccelerator
     };
     if (originalDoesAcceleratorExist) {
+        pplibReportCall = thread_call_allocate(reportPplib, nullptr);
+        if (!pplibReportCall)
+            KernelLog::logWarning(KernelLog::Category::Hook, "PPLIB", "install", "Unable to allocate messageAccelerator reporter");
         if (patcher.routeMultiple(index, &request, 1, address, size)) KernelLog::logInfo(KernelLog::Category::Hook, "Framebuffer", "install identity", "Hook installed: %s", request.symbol);
         else KernelLog::logError(KernelLog::Category::Hook, "Framebuffer", "install identity", "Hook failed: %s error=%d", request.symbol, static_cast<int>(patcher.getError()));
     }

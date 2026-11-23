@@ -24,7 +24,7 @@ constexpr uint32_t inboxWritePointer = segmentDword + 0x1d6;
 constexpr uint32_t inboxReadPointer = segmentDword + 0x1d7;
 constexpr uint32_t disabledPipes = segmentDword + 0xca;
 constexpr mach_vm_address_t framebufferTextBase = 0xbfe6000;
-constexpr uint32_t bootWatermarksSize = 0x36e;
+constexpr uint32_t bootWatermarksSize = 0x36a;
 
 mach_vm_address_t originalReadRegister;
 mach_vm_address_t originalWriteRegister;
@@ -84,7 +84,7 @@ bool isDisplayRegister(uint32_t reg) {
 
 bool isBootWatermarksCaller(void *address) {
     uint32_t caller = static_cast<uint32_t>(reinterpret_cast<mach_vm_address_t>(address) - framebufferAddress + framebufferTextBase);
-    return bootWatermarksFirst && caller >= bootWatermarksFirst && caller <= bootWatermarksFirst + bootWatermarksSize;
+    return bootWatermarksFirst && caller >= bootWatermarksFirst && caller < bootWatermarksFirst + bootWatermarksSize;
 }
 
 bool hasTranslatedFields(uint32_t reg) {

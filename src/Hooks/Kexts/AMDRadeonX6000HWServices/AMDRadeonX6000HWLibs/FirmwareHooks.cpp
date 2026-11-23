@@ -135,7 +135,8 @@ uint64_t wrapGetDcnFirmwareConstraint(uint64_t version, uint64_t dmcub, uint64_t
         static uint32_t reports;
         if (__atomic_load_n(&reports, __ATOMIC_RELAXED) < 8 && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 8)
             KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DMUB", "firmware load",
-                "_dmcub_load_fw result=0x%llx", static_cast<unsigned long long>(loadResult));
+                "_dmcub_load_fw success=%u raw_eax=0x%08x",
+                static_cast<unsigned>(static_cast<uint8_t>(loadResult) != 0), static_cast<unsigned>(loadResult));
     }
     return result;
 }

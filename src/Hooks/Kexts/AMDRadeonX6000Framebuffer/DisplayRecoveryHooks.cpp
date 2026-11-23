@@ -45,13 +45,15 @@ void openBootFramebuffer(void *, wait_result_t) {
             framebuffer->retain();
         }
         auto online = service->getProperty("IOFBOnline");
-        auto mode = OSDynamicCast(OSNumber, service->getProperty("IOFBCurrentMode"));
+        auto modeProperty = service->copyProperty("IOFBCurrentMode");
+        auto mode = OSDynamicCast(OSNumber, modeProperty);
         KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "framebuffer candidate",
             "registry_id=0x%llx location=%s online=%s mode_known=%u mode=0x%x config_present=%u",
             static_cast<unsigned long long>(service->getRegistryEntryID()), location ? location : "(none)",
             online == kOSBooleanTrue ? "yes" : online == kOSBooleanFalse ? "no" : "unknown",
             static_cast<unsigned>(mode != nullptr), mode ? mode->unsigned32BitValue() : 0u,
             static_cast<unsigned>(service->getProperty("IOFBConfig") != nullptr));
+        OSSafeReleaseNULL(modeProperty);
     }
     OSSafeReleaseNULL(iterator);
     if (!framebuffer) {
@@ -125,11 +127,10 @@ void replayPanelConnection(void *argument, wait_result_t) {
         IOSleep(40000);
     }
     uint64_t link = reinterpret_cast<ControllerFunction>(getLink)(controller, 0, 0, 0, 0, 0);
-    if (!link || *reinterpret_cast<uint8_t *>(link + 0x494)) {
-        KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "boot replay",
-            "Skipped: %s", link ? "getLink(0) connection flag is set" : "getLink(0) returned null");
-        return;
-    }
+    uint8_t connection = link ? *reinterpret_cast<const uint8_t *>(link + 0x494) : 0;
+    KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "boot replay",
+        "getLink(0) present=%u connection=0x%02x", static_cast<unsigned>(link != 0), static_cast<unsigned>(connection));
+    if (!link || connection) return;
     *reinterpret_cast<uint8_t *>(link + 0x494) = 0;
     memset(reinterpret_cast<void *>(link + 0x4a0), 0, 0x400);
     uint64_t started = getTimeMicroseconds();

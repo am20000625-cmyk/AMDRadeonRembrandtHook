@@ -8,8 +8,6 @@
 
 namespace {
 
-constexpr mach_vm_address_t framebufferTextBase = 0xbfe6000;
-constexpr mach_vm_address_t displayMessageAddress = 0xc14fb83;
 DisplayStream pendingStream;
 
 uint32_t readStreamField(const char *message, const char *key) {
@@ -43,18 +41,20 @@ void wrapDisplayMessage(void *, int, const char *format, ...) {
 void installDisplayStreamHook(KernelPatcher &patcher, mach_vm_address_t address, size_t size) {
     constexpr uint8_t prologue[] {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,
         0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x81, 0xec};
-    constexpr mach_vm_address_t offset = displayMessageAddress - framebufferTextBase;
-    if (size < sizeof(prologue) || offset > size - sizeof(prologue)) {
-        KernelLog::logWarning(KernelLog::Category::Hook, "DisplayStream", "install", "Expected function offset outside framebuffer image");
+    constexpr mach_vm_address_t offsets[] {0x1697b3, 0x169b83};
+    for (auto offset : offsets) {
+        if (size < sizeof(prologue) || offset > size - sizeof(prologue)) continue;
+        mach_vm_address_t function = address + offset;
+        if (memcmp(reinterpret_cast<const void *>(function), prologue, sizeof(prologue))) continue;
+        patcher.routeFunction(function, reinterpret_cast<mach_vm_address_t>(wrapDisplayMessage), false);
+        if (patcher.getError() != KernelPatcher::Error::NoError)
+            KernelLog::logError(KernelLog::Category::Hook, "DisplayStream", "install", "Hook failed: error=%d", static_cast<int>(patcher.getError()));
+        else
+            KernelLog::logInfo(KernelLog::Category::Hook, "DisplayStream", "install",
+                "Display stream hook installed: offset=0x%llx address=0x%llx",
+                static_cast<unsigned long long>(offset), static_cast<unsigned long long>(function));
+        patcher.clearError();
         return;
     }
-    mach_vm_address_t function = address + offset;
-    if (memcmp(reinterpret_cast<const void *>(function), prologue, sizeof(prologue))) {
-        KernelLog::logWarning(KernelLog::Category::Hook, "DisplayStream", "install", "Expected function prologue not found");
-        return;
-    }
-    patcher.routeFunction(function, reinterpret_cast<mach_vm_address_t>(wrapDisplayMessage), false);
-    if (patcher.getError() != KernelPatcher::Error::NoError) KernelLog::logError(KernelLog::Category::Hook, "DisplayStream", "install", "Hook failed: error=%d", static_cast<int>(patcher.getError()));
-    else KernelLog::logInfo(KernelLog::Category::Hook, "DisplayStream", "install", "Display stream hook installed");
-    patcher.clearError();
+    KernelLog::logWarning(KernelLog::Category::Hook, "DisplayStream", "install", "Expected function prologue not found");
 }
