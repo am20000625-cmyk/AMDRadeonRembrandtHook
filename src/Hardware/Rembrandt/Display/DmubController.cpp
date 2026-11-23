@@ -3,6 +3,7 @@
 #include <IOKit/IOLib.h>
 #include <kern/thread.h>
 
+extern void drainDisplaySamples();
 extern bool mmioAvailable();
 extern uint32_t mmioRead(uint32_t reg);
 extern void mmioWrite(uint32_t reg, uint32_t value);
@@ -36,8 +37,10 @@ uint32_t sendDisplayClockMessage(uint32_t message, uint32_t argument) {
 void watchDmub(void *, wait_result_t) {
     uint32_t released = 0;
     uint32_t lastState = ~0u;
+    uint32_t previousRead = 0, previousWrite = 0, pointerReports = 0;
     for (uint32_t elapsed = 0;; elapsed += elapsed < 60000 ? 1 : 10) {
         IOSleep(elapsed < 60000 ? 1 : 10);
+        if (elapsed % 100 == 0) drainDisplaySamples();
         if (!mmioAvailable()) continue;
         if (elapsed % 2000 == 0 && mmioRead(inboxRead) == mmioRead(inboxWrite) && mmioRead(phyStatus)) {
             uint32_t clock = mmioRead(phyClock);
@@ -46,11 +49,19 @@ void watchDmub(void *, wait_result_t) {
         uint32_t current = mmioRead(control), reset = mmioRead(control2);
         bool running = (current & (1u << 16)) && !(current & (1u << 17));
         uint32_t state = (static_cast<uint32_t>(running) << 1) | (reset & 1);
-        if (state != lastState) {
+        bool stateChanged = state != lastState;
+        if (stateChanged || pointerReports < 15) {
+            uint32_t read = mmioRead(inboxRead), write = mmioRead(inboxWrite);
+            bool moved = lastState != ~0u && (read != previousRead || write != previousWrite);
+            if (stateChanged || moved) {
+                KernelLog::logDiagnosticInfo(KernelLog::Category::Hardware, "DMUB", "state",
+                    "reset=%u running=%u inbox_read=0x%x inbox_write=0x%x",
+                    reset & 1, static_cast<unsigned>(running), read, write);
+                if (moved && pointerReports < 15) ++pointerReports;
+            }
+            previousRead = read;
+            previousWrite = write;
             lastState = state;
-            KernelLog::logDiagnosticInfo(KernelLog::Category::Hardware, "DMUB", "state",
-                "reset=%u running=%u inbox_read=0x%x inbox_write=0x%x",
-                reset & 1, static_cast<unsigned>(running), mmioRead(inboxRead), mmioRead(inboxWrite));
         }
         if (running && (reset & 1)) {
             mmioWrite(bootOptions, mmioRead(bootOptions) | (1u << 10) | (1u << 6));
