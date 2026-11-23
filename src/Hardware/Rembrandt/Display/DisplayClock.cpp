@@ -1,6 +1,5 @@
 #include "Hardware/Rembrandt/Display/DisplayClock.hpp"
 #include <IOKit/IOLib.h>
-#include "Diagnostics/KernelLog.hpp"
 
 extern uint32_t mmioRead(uint32_t reg);
 extern void mmioWrite(uint32_t reg, uint32_t value);
@@ -24,13 +23,13 @@ uint32_t getHdmiClock(const DisplayStream &stream) {
     }
 }
 
-void startOtgClock(uint32_t crtc, uint32_t clock100Hz) {
-    if (crtc > 3) return;
+bool startOtgClock(uint32_t crtc, uint32_t clock100Hz) {
+    if (crtc > 3) return false;
     uint32_t otgClock = segmentDword + 0x1b86 + crtc * 0x80;
     uint32_t odmClock = segmentDword + 0x1acf + crtc * 0x10;
     uint32_t rate = 0xc0 + 0x80 + crtc * 4;
     uint32_t before = mmioRead(otgClock);
-    if ((before & (1u << 8)) && (mmioRead(rate) & 0x18)) return;
+    if ((before & (1u << 8)) && (mmioRead(rate) & 0x18)) return true;
     uint32_t count = 0;
     if (before & 1) {
         mmioWrite(otgClock, before & ~1u);
@@ -45,7 +44,9 @@ void startOtgClock(uint32_t crtc, uint32_t clock100Hz) {
     mmioWrite(odmClock, mmioRead(odmClock) | 3);
     mmioWrite(otgClock, mmioRead(otgClock) | 3);
     count = 0;
-    while (!(mmioRead(otgClock) & (1u << 8)) && count++ < 1000) IODelay(10);
+    bool locked;
+    while (!(locked = (mmioRead(otgClock) & (1u << 8)) != 0) && count++ < 1000) IODelay(10);
+    return locked;
 }
 
 }
@@ -58,20 +59,17 @@ void setExternalDisplayStream(uint32_t pixelClockKhz, uint32_t encoding, uint32_
     externalStream = {pixelClockKhz, encoding, depth, link};
 }
 
-void configureHdmiPixelClock(uint64_t ring, uint32_t offset, uint32_t clock) {
+void configureHdmiPixelClock(uint64_t ring, uint32_t offset, uint32_t clock, HdmiClockDiagnostic &diagnostic) {
     const auto &stream = getExternalDisplayStream();
     uint64_t data = vramRead64(ring + offset + 8);
     uint32_t word2 = static_cast<uint32_t>(data), word3 = static_cast<uint32_t>(data >> 32);
     if (((word2 >> 16) & 0xff) != 3) return;
     uint32_t crtc = word3 & 0xff;
-    startOtgClock(crtc, clock);
-    static uint32_t reports;
-    if (__atomic_load_n(&reports, __ATOMIC_RELAXED) < 24 && __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 24) {
-        unsigned locked = crtc <= 3 ? (mmioRead(segmentDword + 0x1b86 + crtc * 0x80) >> 8) & 1u : 0;
-        KernelLog::logDiagnosticInfo(KernelLog::Category::Hardware, "HDMI", "OTG clock",
-            "crtc=%u clock_100hz=%u external_clock_khz=%u external_link=%u encoding=%u depth=%u otg_locked=%u",
-            crtc, clock, stream.pixelClockKhz, stream.link, stream.encoding, stream.depth, locked);
-    }
+    bool locked = startOtgClock(crtc, clock);
+    diagnostic.clock100Hz = clock;
+    diagnostic.crtc = static_cast<int32_t>(crtc);
+    diagnostic.otgLocked = locked;
+    diagnostic.stream = stream;
     if (!stream.pixelClockKhz || getHdmiClock(stream) != clock) return;
     static uint32_t currentMhz = 600;
     uint32_t mhz = static_cast<uint32_t>((static_cast<uint64_t>(stream.pixelClockKhz) * 101 + 99999) / 100000);

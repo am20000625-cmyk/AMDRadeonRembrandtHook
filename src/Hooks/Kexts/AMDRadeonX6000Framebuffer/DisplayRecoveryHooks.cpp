@@ -3,7 +3,7 @@
 #include "Diagnostics/Diagnostics.hpp"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOService.h>
-#include <IOKit/graphics/IOFramebuffer.h>
+#include <libkern/c++/OSNumber.h>
 #include <kern/thread.h>
 #include <mach/mach_time.h>
 
@@ -44,27 +44,29 @@ void openBootFramebuffer(void *, wait_result_t) {
             framebuffer = service;
             framebuffer->retain();
         }
-        auto candidate = OSDynamicCast(IOFramebuffer, service);
-        IODisplayModeID mode = 0;
-        IOIndex depth = 0;
-        uintptr_t online = 0;
-        IOReturn onlineResult = candidate ? candidate->getAttributeForConnection(0, kConnectionEnable, &online) : kIOReturnUnsupported;
-        IOReturn modeResult = candidate ? candidate->getCurrentDisplayMode(&mode, &depth) : kIOReturnUnsupported;
+        auto online = service->getProperty("IOFBOnline");
+        auto mode = OSDynamicCast(OSNumber, service->getProperty("IOFBCurrentMode"));
         KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "framebuffer candidate",
-            "location=%s online=%u online_status=0x%x mode=0x%x depth=%u mode_status=0x%x",
-            location ? location : "(none)", static_cast<unsigned>(online != 0), static_cast<unsigned>(onlineResult),
-            static_cast<unsigned>(mode), static_cast<unsigned>(depth), static_cast<unsigned>(modeResult));
+            "registry_id=0x%llx location=%s online=%s mode_known=%u mode=0x%x config_present=%u",
+            static_cast<unsigned long long>(service->getRegistryEntryID()), location ? location : "(none)",
+            online == kOSBooleanTrue ? "yes" : online == kOSBooleanFalse ? "no" : "unknown",
+            static_cast<unsigned>(mode != nullptr), mode ? mode->unsigned32BitValue() : 0u,
+            static_cast<unsigned>(service->getProperty("IOFBConfig") != nullptr));
     }
     OSSafeReleaseNULL(iterator);
     if (!framebuffer) {
         KernelLog::logWarning(KernelLog::Category::Hook, "DisplayRecovery", "open boot framebuffer", "Internal framebuffer not found");
         return;
     }
+    KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "open boot framebuffer",
+        "Scanning vtable slots 200..420");
     auto table = *reinterpret_cast<mach_vm_address_t **>(framebuffer);
     bool foundOpen = false;
-    for (size_t slot = 200; framebufferOpen && slot <= 420; ++slot) {
+    for (size_t slot = 200; table && framebufferOpen && slot <= 420; ++slot) {
         if (table[slot] != framebufferOpen) continue;
         foundOpen = true;
+        KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "open boot framebuffer",
+            "Calling open slot=%lu", static_cast<unsigned long>(slot));
         IOReturn result = reinterpret_cast<IOReturn (*)(IOService *)>(table[slot])(framebuffer);
         KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "DisplayRecovery", "open boot framebuffer",
             "vtable match slot=%lu result=0x%x", static_cast<unsigned long>(slot), static_cast<unsigned>(result));

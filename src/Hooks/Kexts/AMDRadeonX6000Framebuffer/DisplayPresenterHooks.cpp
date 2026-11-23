@@ -48,7 +48,6 @@ bool deferredCompleteTimingInstalled;
 bool presenterEntryDiagnostics;
 uint32_t rawEvents[5];
 uint32_t rejectedClass, rejectedIndex, rejectedUnregistered;
-const char *firstRejectedClass;
 int32_t firstRejectedIndex = -1;
 
 uint64_t readPresenterField(uint64_t presenter, uint32_t offset) {
@@ -62,14 +61,8 @@ int32_t recordPresenter(uint64_t presenter, EventTiming PresenterTiming::*event,
             event == &PresenterTiming::enqueue ? 2 : event == &PresenterTiming::flip ? 3 : 4;
         __atomic_fetch_add(&rawEvents[index], 1, __ATOMIC_RELAXED);
     }
-    const auto *meta = presenter ? reinterpret_cast<OSObject *>(presenter)->getMetaClass() : nullptr;
-    if (!presenter || !presenterMetaClass || meta != presenterMetaClass) {
-        if (collect) {
-            __atomic_fetch_add(&rejectedClass, 1, __ATOMIC_RELAXED);
-            const char *empty = nullptr;
-            const char *name = meta ? meta->getClassName() : "(none)";
-            __atomic_compare_exchange_n(&firstRejectedClass, &empty, name, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
-        }
+    if (!presenter || !presenterMetaClass || reinterpret_cast<OSObject *>(presenter)->getMetaClass() != presenterMetaClass) {
+        if (collect) __atomic_fetch_add(&rejectedClass, 1, __ATOMIC_RELAXED);
         return -1;
     }
     uint8_t index = *reinterpret_cast<volatile uint8_t *>(presenter + 0xa0);
@@ -189,13 +182,12 @@ void reportPresenterTiming(void *, wait_result_t) {
         IOSimpleLockUnlockEnableInterrupt(presenterLock, interruptState);
         if (!running) break;
         if ((sample + 1) <= 120 && (sample + 1) % 10 == 0) {
-            auto name = __atomic_load_n(&firstRejectedClass, __ATOMIC_RELAXED);
             KernelLog::logDiagnosticInfo(KernelLog::Category::Hook, "PresenterTiming", "heartbeat",
-                "seconds=%u cumulative vblank=%u vupdate=%u enqueue=%u flip=%u deferred=%u reject_class=%u first_class=%s reject_index=%u first_index=%d reject_unregistered=%u",
+                "seconds=%u cumulative vblank=%u vupdate=%u enqueue=%u flip=%u deferred=%u reject_class=%u reject_index=%u first_index=%d reject_unregistered=%u",
                 sample + 1, __atomic_load_n(&rawEvents[0], __ATOMIC_RELAXED),
                 __atomic_load_n(&rawEvents[1], __ATOMIC_RELAXED), __atomic_load_n(&rawEvents[2], __ATOMIC_RELAXED),
                 __atomic_load_n(&rawEvents[3], __ATOMIC_RELAXED), __atomic_load_n(&rawEvents[4], __ATOMIC_RELAXED),
-                __atomic_load_n(&rejectedClass, __ATOMIC_RELAXED), name ? name : "(none)",
+                __atomic_load_n(&rejectedClass, __ATOMIC_RELAXED),
                 __atomic_load_n(&rejectedIndex, __ATOMIC_RELAXED), __atomic_load_n(&firstRejectedIndex, __ATOMIC_RELAXED),
                 __atomic_load_n(&rejectedUnregistered, __ATOMIC_RELAXED));
             if (sample + 1 == 120) __atomic_store_n(&presenterEntryDiagnostics, false, __ATOMIC_RELAXED);

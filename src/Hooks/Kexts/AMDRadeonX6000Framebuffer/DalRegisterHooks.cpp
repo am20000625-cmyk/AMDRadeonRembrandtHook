@@ -7,6 +7,8 @@
 #include "Hardware/Rembrandt/Display/DmubInbox.hpp"
 #include "Hardware/Rembrandt/Display/UsbCDpLink.hpp"
 #include <kern/thread.h>
+#include <mach/mach_time.h>
+#include "Hardware/Rembrandt/Display/DisplayClock.hpp"
 
 extern uint32_t mmioRead(uint32_t reg);
 extern void mmioWrite(uint32_t reg, uint32_t value);
@@ -113,6 +115,21 @@ uint64_t wrapReadRegister(uint64_t helper, uint64_t reg, uint64_t c, uint64_t d,
     return value;
 }
 
+void reportHdmiClock(const HdmiClockDiagnostic &diagnostic) {
+    if (!diagnostic.commandCount) return;
+    static uint64_t previous;
+    uint64_t now;
+    absolutetime_to_nanoseconds(mach_absolute_time(), &now);
+    auto last = __atomic_load_n(&previous, __ATOMIC_RELAXED);
+    if (last && (now <= last || now - last < 1000000000ULL)) return;
+    if (!__atomic_compare_exchange_n(&previous, &last, now, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) return;
+    const auto &stream = diagnostic.stream;
+    KernelLog::logDiagnosticInfo(KernelLog::Category::Hardware, "HDMI", "DAL command",
+        "0x0280 count=%u crtc=%d clock_100hz=%u external_clock_khz=%u external_link=%u encoding=%u depth=%u otg_locked=%d",
+        diagnostic.commandCount, diagnostic.crtc, diagnostic.clock100Hz, stream.pixelClockKhz, stream.link,
+        stream.encoding, stream.depth, diagnostic.otgLocked);
+}
+
 uint64_t wrapWriteRegister(uint64_t helper, uint64_t reg, uint64_t value, uint64_t d, uint64_t e, uint64_t f) {
     uint32_t requested = static_cast<uint32_t>(reg);
     if (isDalPowerGatingRegister(requested)) {
@@ -120,23 +137,28 @@ uint64_t wrapWriteRegister(uint64_t helper, uint64_t reg, uint64_t value, uint64
         return 0;
     }
     bool locked = false;
+    HdmiClockDiagnostic diagnostic {0, 0, -1, -1, {}};
+    auto finish = [&] {
+        if (locked) IOLockUnlock(gDmubInboxLock);
+        reportHdmiClock(diagnostic);
+    };
     if (requested == inboxWritePointer) {
         if (gDmubInboxLock) {
             IOLockLock(gDmubInboxLock);
             locked = true;
         }
         uint32_t next = static_cast<uint32_t>(value);
-        uint32_t real = filterDalDmubCommands(gDmubAhead ? gDalWritePointer : mmioRead(inboxWritePointer), next);
+        uint32_t real = filterDalDmubCommands(gDmubAhead ? gDalWritePointer : mmioRead(inboxWritePointer), next, diagnostic);
         if (gDmubAhead) {
             uint32_t hardwareWrite = realignDmubInbox(next);
             gDalWritePointer = next;
             if (hardwareWrite != ~0u) mmioWrite(inboxWritePointer, hardwareWrite);
-            if (locked) IOLockUnlock(gDmubInboxLock);
+            finish();
             return 0;
         }
         gDalWritePointer = next;
         if (!real) {
-            if (locked) IOLockUnlock(gDmubInboxLock);
+            finish();
             return 0;
         }
         prepareUsbCDpCommands(next);
@@ -144,7 +166,7 @@ uint64_t wrapWriteRegister(uint64_t helper, uint64_t reg, uint64_t value, uint64
     uint32_t hardware = translateDcnRegister(requested);
     recordDalAuxAccess(hardware);
     if (isDalPhyRegister(hardware)) {
-        if (locked) IOLockUnlock(gDmubInboxLock);
+        finish();
         return 0;
     }
     if (hasTranslatedFields(hardware))
@@ -157,7 +179,7 @@ uint64_t wrapWriteRegister(uint64_t helper, uint64_t reg, uint64_t value, uint64
         DalAccessGuard guard;
         result = reinterpret_cast<RegisterCallback>(originalWriteRegister)(helper, hardware, value, d, e, f);
     }
-    if (locked) IOLockUnlock(gDmubInboxLock);
+    finish();
     return result;
 }
 
